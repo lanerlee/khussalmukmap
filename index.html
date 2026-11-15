@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>경희대학교 저비용 지도</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<style>
+@font-face {
+  font-family: 'NeoDonggeunmo';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2001@1.3/NeoDunggeunmo.woff') format('woff');
+  font-weight: normal;
+  font-display: swap;
+}
+
+/* ===== 조정용 값 (아직 확정되지 않은 항목) ===== */
+:root {
+  --map-margin: 16px;          /* 지도와 화면 가장자리 사이 여백 */
+  --marker-w: 92px;            /* 마커 가로 크기(지도 픽셀). 세로는 자동(5:3) */
+  --label-font: 47px;          /* 시설 이름 라벨 글자 크기(지도 픽셀) */
+  --label-h: 82px;             /* 시설 이름 라벨 높이(지도 픽셀) */
+  --modal-w: 460px;            /* 상세 정보 창 너비 */
+  --hover-stroke: #7A1426;     /* 빨간 건물 호버 테두리 */
+  --modal-bg: #EFEFEF;         /* 상세 창 배경(옅은 회색) */
+  --page-bg: #F9F9F9;          /* 화면 전체 배경 (지도 바깥 회색과 같은 색) */
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--page-bg); color: #111; }
+body, button { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+#app.blurred { filter: blur(3px); }
+
+/* ----- 상단 ----- */
+header {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 12px; padding: 14px var(--map-margin) 10px;
+}
+#title {
+  margin: 0; font-family: 'NeoDonggeunmo', monospace; font-weight: normal;
+  font-size: 32px; cursor: pointer; user-select: none; letter-spacing: 0;
+}
+.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.filters { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ----- 버튼 (흰 배경, 각진 모서리, 호버·선택 시 흑백 반전) ----- */
+.btn {
+  appearance: none; background: #fff; color: #111; border: 0; border-radius: 0;
+  padding: 5px 9px; font-size: 13px; cursor: pointer; line-height: 1.2;
+}
+.btn:hover, .btn:active, .btn.selected { background: #111; color: #fff; }
+
+/* ----- 지도 ----- */
+#viewport {
+  position: relative; flex: 1; min-height: 0; margin: 0 var(--map-margin);
+  overflow: hidden; cursor: default; touch-action: none; background: var(--page-bg);
+}
+#viewport.dragging { cursor: grabbing; }
+#stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#stage img { display: block; image-rendering: pixelated; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+#stage svg { position: absolute; left: 0; top: 0; overflow: visible; }
+
+.bld { fill: transparent; stroke: transparent; stroke-width: 5; stroke-linejoin: miter; }
+.bld.red { pointer-events: none; }
+.bgroup.hover .bld { stroke: var(--hover-stroke); }
+#names { pointer-events: none; }
+#names text { font-family: inherit; fill: #2A2A2A; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 7px; stroke-linejoin: round; }
+#names text.sub { fill: #6E6E6E; font-weight: 500; }
+
+/* ----- 마커 ----- */
+#markers { position: absolute; left: 0; top: 0; }
+.mk {
+  position: absolute; width: var(--marker-w); height: calc(var(--marker-w) * 5 / 3);
+  transform: translate(-50%, -100%);
+}
+.pin {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  padding: 0; border: 0; background: none; cursor: pointer; z-index: 2;
+}
+.pin svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
+
+/* 시설 이름 라벨: 마커 뒤에서 오른쪽으로 펼쳐짐 */
+.label {
+  position: absolute; z-index: 1; left: 50%;
+  top: calc(var(--marker-w) * 5 / 3 * 0.38 - var(--label-h) / 2);
+  height: var(--label-h); line-height: var(--label-h);
+  padding: 0 22px 0 calc(var(--marker-w) / 2 + 14px);
+  white-space: nowrap; font-size: var(--label-font); font-weight: 600;
+  background: #fff; color: #111; border: 4px solid #111;
+  clip-path: inset(0 100% 0 0); transition: clip-path .22s ease-out;
+  cursor: pointer;
+}
+.mk.single:hover .label, .mk.group:hover .item .label, .pin:focus-visible + .label { clip-path: inset(0 0 0 0); }
+.mk.group:hover .item .label { transition-delay: .18s; }
+
+/* 겹친 마커 */
+.mk.group { z-index: 1; }
+.mk.group:hover { z-index: 5; }
+.mk .item { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  transform: translateY(0); opacity: 0; pointer-events: none;
+  transition: transform .25s ease-out, opacity .15s ease-out; }
+.mk { --step-x: 0px; --step-y: -102px; }  /* 펼칠 때 한 칸 이동량(지도 픽셀): 수직 */
+.mk.group:hover .item { opacity: 1; pointer-events: auto; transform: translate(calc(var(--step-x) * var(--k)), calc(var(--step-y) * var(--k))); }
+/* 펼친 마커·라벨 사이 빈틈을 지나도 펼친 상태가 유지되도록 하는 투명 영역 */
+.mk .hit { position: absolute; z-index: 0; pointer-events: none; }
+.mk.group:hover .hit { pointer-events: auto; }
+.mk .item .pin { z-index: 2; }
+.mk .item:hover { z-index: 3; }
+.mk .base { position: absolute; inset: 0; z-index: 2; transition: opacity .1s; }
+.mk.group:hover .base { opacity: 0; pointer-events: none; }  /* 펼치면 원래 마커 자리에 가운데 번호 마커가 옴 */
+.mk.group .item.last { transition: opacity 0s; }
+.mk.single:hover { z-index: 5; }
+
+/* ----- 저작권 ----- */
+footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10px; }
+
+/* ----- 상세 정보 / 분석 창 ----- */
+#overlay {
+  position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.25); z-index: 100;
+}
+#overlay.open { display: flex; }
+.modal {
+  position: relative; width: min(var(--modal-w), calc(100vw - 32px));
+  background: var(--modal-bg); border: 0; border-radius: 0; box-shadow: none;
+  padding: 28px 28px 14px;
+}
+.modal h2 { margin: 0 0 18px; font-size: 23px; font-weight: 700; line-height: 1.35; padding-right: 28px; }
+.modal dl { margin: 0; display: grid; grid-template-columns: auto 1fr; column-gap: 18px; row-gap: 10px; font-size: 17px; line-height: 1.5; }
+.modal dt { color: #6A6A6A; white-space: nowrap; }
+.modal dd { margin: 0; white-space: pre-line; }
+.modal .close-row { text-align: center; margin-top: 22px; }
+.text-btn {
+  appearance: none; background: transparent; color: #111; border: 1px solid transparent; border-radius: 0;
+  padding: 8px 18px; font-size: 16px; cursor: pointer;
+}
+.text-btn:hover, .text-btn:active { background: #111; color: #fff; border-color: #111; }
+.next-btn {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  appearance: none; background: transparent; border: 1px solid transparent; border-radius: 0;
+  width: 32px; height: 40px; font-size: 20px; cursor: pointer; color: #111; padding: 0;
+}
+.next-btn:hover:not(:disabled) { background: #111; color: #fff; }
+.next-btn:disabled { color: #C2C2C2; cursor: default; }
+.stats dd { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.stats dt { color: #111; }
+.stats .total dt, .stats .total dd { font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="title" title="새로고침">경희대학교 저비용 지도</h1>
+    <div class="controls">
+      <div class="filters" id="filters"></div>
+      <button class="btn" id="analysisBtn" type="button">분석</button>
+    </div>
+  </header>
+
+  <div id="viewport">
+    <div id="stage">
+      <img id="mapImg" src="map.png" alt="경희대학교 서울캠퍼스 지도" draggable="false">
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+        <g id="shapes"></g>
+        <g id="names"></g>
+      </svg>
+      <div id="markers"></div>
+    </div>
+  </div>
+
+  <footer>© 2026 이재빈</footer>
+</div>
+
+<div id="overlay" role="dialog" aria-modal="true">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  const MAP_W = 2880, MAP_H = 2440;
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const CATS = window.CATEGORIES;
+  const catById = Object.fromEntries(CATS.map(c => [c.id, c]));
+  const DATA = (location.hash === '#demo' ? window.DEMO_FACILITIES : window.FACILITIES) || [];
+  const MERGE = window.MERGE_DISTANCE ?? 4;
+
+  const $ = id => document.getElementById(id);
+  const viewport = $('viewport'), stage = $('stage'), svg = $('svg');
+
+  /* ---------- 제목: 새로고침 ---------- */
+  $('title').addEventListener('click', () => location.reload());
+
+  /* ---------- 건물 외곽선 · 이름 ---------- */
+  svg.setAttribute('width', MAP_W); svg.setAttribute('height', MAP_H);
+  svg.setAttribute('viewBox', `0 0 ${MAP_W} ${MAP_H}`);
+  const shapesG = $('shapes'), namesG = $('names');
+  for (const b of window.BUILDINGS) {
+    if (b.red && b.shapes.length) {
+      const g = document.createElementNS(SVGNS, 'g');
+      g.setAttribute('class', 'bgroup');
+      for (const p of b.shapes) {
+        const poly = document.createElementNS(SVGNS, 'polygon');
+        poly.setAttribute('points', p);
+        poly.setAttribute('class', 'bld red');
+        g.appendChild(poly);
+      }
+      // 건물 강조(호버) 기능은 사용하지 않음. 외곽선 데이터는 추후 사용을 위해 유지
+      shapesG.appendChild(g);
+    }
+    const L = b.label; if (!L) continue;
+    const t = document.createElementNS(SVGNS, 'text');
+    t.setAttribute('text-anchor', L.anchor || 'middle');
+    t.setAttribute('font-size', L.size || 22);
+        const n = L.lines.length, lh = (L.size || 22) * 1.15;
+    const y0 = L.y - (n - 1) * lh / 2;
+    L.lines.forEach((line, i) => {
+      const ts = document.createElementNS(SVGNS, 'tspan');
+      ts.setAttribute('x', L.x); ts.setAttribute('y', y0 + i * lh);
+      ts.setAttribute('dominant-baseline', 'central');
+      ts.textContent = line; t.appendChild(ts);
+    });
+    if (L.rotate) t.setAttribute('transform', `rotate(${L.rotate} ${L.x} ${L.y})`);
+    namesG.appendChild(t);
+  }
+
+  /* ---------- 픽셀 마커 ---------- */
+  // 세로로 긴 4꼭지 별. 행마다 중심에서의 반폭(가로 15칸 × 세로 25칸, 9행이 가장 넓음)
+  const HALF = [0,0,0,1,1,2,3,4,5,7,5,4,3,2,2,1,1,1,0,0,0,0,0,0,0];
+  const GW = 15, GH = HALF.length, CX = 7;
+  const inShape = (x, y) => y >= 0 && y < GH && Math.abs(x - CX) <= HALF[y];
+  // 5×7 픽셀 숫자
+  const DIGITS = {
+    1:['00100','01100','00100','00100','00100','00100','01110'],
+    2:['01110','10001','00001','00010','00100','01000','11111'],
+    3:['11110','00001','00001','01110','00001','00001','11110'],
+    4:['00010','00110','01010','10010','11111','00010','00010'],
+    5:['11111','10000','11110','00001','00001','10001','01110'],
+    6:['00110','01000','10000','11110','10001','10001','01110'],
+    7:['11111','00001','00010','00100','01000','01000','01000'],
+    8:['01110','10001','10001','01110','10001','10001','01110'],
+    9:['01110','10001','10001','01111','00001','00010','01100']
+  };
+  function runsPath(cells) { // cells: Set of "x,y" → 가로 줄 단위 path
+    const rows = {};
+    for (const k of cells) { const [x, y] = k.split(',').map(Number); (rows[y] ||= []).push(x); }
+    let d = '';
+    for (const y in rows) {
+      const xs = rows[y].sort((a, b) => a - b);
+      let s = xs[0], p = xs[0];
+      for (let i = 1; i <= xs.length; i++) {
+        if (xs[i] === p + 1) { p = xs[i]; continue; }
+        d += `M${s} ${y}h${p - s + 1}v1h-${p - s + 1}z`;
+        s = p = xs[i];
+      }
+    }
+    return d;
+  }
+  const fillCells = new Set(), edgeCells = new Set();
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (inShape(x, y)) {
+    const edge = !inShape(x-1,y) || !inShape(x+1,y) || !inShape(x,y-1) || !inShape(x,y+1);
+    (edge ? edgeCells : fillCells).add(`${x},${y}`);
+  }
+  const FILL_D = runsPath(fillCells), EDGE_D = runsPath(edgeCells);
+  // 색 보간 (그라데이션용)
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => '#' + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  function gradAt(colors, t) {             // colors를 위→아래로 고르게 배치
+    if (colors.length === 1) return colors[0];
+    const f = Math.min(Math.max(t, 0), 1) * (colors.length - 1), i = Math.min(Math.floor(f), colors.length - 2);
+    return mix(colors[i], colors[i + 1], f - i);
+  }
+  const ROW_TOP = 3, ROW_BOTTOM = 15;      // 그라데이션이 펼쳐지는 행 범위(별의 몸통)
+  const rowCells = (set, y) => new Set([...set].filter(k => +k.split(',')[1] === y));
+  // cats: 마커에 담긴 시설 유형들(1번 시설 순서). 두 가지 이상이면 픽셀 단위 세로 그라데이션
+  function markerSVG(cats, count) {
+    let body;
+    if (cats.length === 1) {
+      body = `<path d="${FILL_D}" fill="${cats[0].color}"/><path d="${EDGE_D}" fill="${cats[0].dark}"/>`;
+    } else {
+      body = '';
+      for (let y = 0; y < GH; y++) {
+        const t = (y - ROW_TOP) / (ROW_BOTTOM - ROW_TOP);
+        const fc = gradAt(cats.map(c => c.color), t), ec = gradAt(cats.map(c => c.dark), t);
+        const f = runsPath(rowCells(fillCells, y)), e = runsPath(rowCells(edgeCells, y));
+        if (f) body += `<path d="${f}" fill="${fc}"/>`;
+        if (e) body += `<path d="${e}" fill="${ec}"/>`;
+      }
+    }
+    let digit = '';
+    if (count) {
+      const n = Math.min(count, 9), rows = DIGITS[n], cells = new Set();
+      rows.forEach((r, y) => [...r].forEach((c, x) => { if (c === '1') cells.add(`${x + 5},${y + 6}`); }));
+      digit = `<path d="${runsPath(cells)}" fill="#fff"/>`;
+    }
+    return `<svg viewBox="0 0 ${GW} ${GH}" preserveAspectRatio="none" aria-hidden="true">${body}${digit}</svg>`;
+  }
+  const NEUTRAL = { color: '#555', dark: '#222' };
+
+  /* ---------- 마커 배치 · 필터 ---------- */
+  let currentFilter = 'all';
+  const markersEl = $('markers');
+  function groupFacilities(list) {
+    const groups = [];
+    for (const f of list) {
+      // 같은 건물(building)이면 하나로, 건물이 없으면 좌표가 가까운 것끼리 하나로
+      const g = groups.find(g => f.building ? g.building === f.building : (!g.building && Math.hypot(g.x - f.x, g.y - f.y) <= MERGE));
+      if (g) g.items.push(f); else groups.push({ x: f.x, y: f.y, building: f.building, items: [f] });
+    }
+    return groups;
+  }
+  function pinButton(cats, count, title) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'pin'; b.innerHTML = markerSVG([].concat(cats), count);
+    b.setAttribute('aria-label', title);
+    return b;
+  }
+  function labelEl(text, onClick) {
+    const s = document.createElement('span'); s.className = 'label'; s.textContent = text;
+    s.addEventListener('click', () => { if (!moved) onClick(); });
+    return s;
+  }
+  // 시설 유형: 하나("study") 또는 여러 개(["study", "welfare"])
+  const catsOf = f => [].concat(f.category);
+  const catObjs = ids => ids.map(id => catById[id] || NEUTRAL);
+
+  function renderMarkers() {
+    markersEl.innerHTML = '';
+    const list = DATA.filter(f => currentFilter === 'all' || catsOf(f).includes(currentFilter));
+    const groups = groupFacilities(list).sort((a, b) => a.y - b.y); // 아래쪽 마커가 앞에 오도록
+    for (const g of groups) {
+      const el = document.createElement('div');
+      el.style.left = g.x + 'px'; el.style.top = g.y + 'px';
+      if (g.items.length === 1) {
+        const f = g.items[0];
+        el.className = 'mk single';
+        const pin = pinButton(catObjs(catsOf(f)), 0, f.name);
+        pin.addEventListener('click', () => { if (!moved) openDetail(g.items, 0); });
+        el.append(pin, labelEl(f.name, () => openDetail(g.items, 0)));
+      } else {
+        el.className = 'mk group';
+        let hoverAt = 0;   // 펼치기 시작한 시각: 펼쳐지기 전에 누르면 1번부터 차례로 보여줌
+        el.addEventListener('pointerenter', () => { hoverAt = performance.now(); });
+        const open = f => { if (moved) return; performance.now() - hoverAt < 280 ? openDetail(g.items, 0) : openDetail([f], 0); };
+        const n = g.items.length;
+        g.items.forEach((f, i) => {
+          const item = document.createElement('div');
+          item.className = 'item';
+          const k = (n - 1) / 2 - i;                        // 원래 마커를 중심으로: 1번이 왼쪽 위 끝, 마지막 번호가 오른쪽 아래 끝
+          item.style.setProperty('--k', k);
+          if (k === 0) item.classList.add('last');          // 가운데 번호는 원래 마커 자리
+          item.style.transitionDelay = `${Math.abs(k) * 30}ms`;
+          const pin = pinButton(catObjs(catsOf(f)), i + 1, f.name);   // 펼친 마커에 1, 2, 3… 번호
+          pin.addEventListener('click', () => open(f));
+          item.append(pin, labelEl(f.name, () => openDetail([f], 0)));
+          el.appendChild(item);
+        });
+        const base = document.createElement('div');
+        base.className = 'base';
+        const cats = catObjs([...new Set(g.items.flatMap(catsOf))]);
+        const pin = pinButton(cats, n, `${n}개 시설`);
+        pin.addEventListener('click', () => { if (!moved) openDetail(g.items, 0); });
+        base.appendChild(pin);
+        el.appendChild(base);
+      }
+      markersEl.appendChild(el);
+      if (g.items.length > 1) {
+        // 펼쳤을 때 차지하는 범위를 계산해 투명 영역 크기를 정함
+        const W = el.offsetWidth, H = el.offsetHeight, n = g.items.length;
+        const cs = getComputedStyle(el), sx = parseFloat(cs.getPropertyValue('--step-x')) || 0, sy = parseFloat(cs.getPropertyValue('--step-y'));
+        let left = 0, top = 0, right = W, bottom = H;
+        el.querySelectorAll('.item').forEach(it => {
+          const k = +it.style.getPropertyValue('--k'), lab = it.querySelector('.label');
+          const x = sx * k, y = sy * k;
+          left = Math.min(left, x); top = Math.min(top, y); bottom = Math.max(bottom, y + H);
+          right = Math.max(right, x + lab.offsetLeft + lab.offsetWidth);
+        });
+        const hit = document.createElement('div');
+        hit.className = 'hit';
+        Object.assign(hit.style, { left: left + 'px', top: top + 'px', width: (right - left) + 'px', height: (bottom - top) + 'px' });
+        el.prepend(hit);
+      }
+    }
+  }
+
+  const filtersEl = $('filters');
+  [{ id: 'all', name: '전체' }, ...CATS].forEach(c => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn' + (c.id === 'all' ? ' selected' : '');
+    b.textContent = c.name; b.dataset.id = c.id;
+    b.addEventListener('click', () => {
+      currentFilter = c.id;
+      filtersEl.querySelectorAll('.btn').forEach(x => x.classList.toggle('selected', x === b));
+      renderMarkers();
+    });
+    filtersEl.appendChild(b);
+  });
+
+  /* ---------- 상세 정보 창 ---------- */
+  const overlay = $('overlay'), modal = $('modal'), app = $('app');
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+  function showModal(html) {
+    modal.innerHTML = html;
+    overlay.classList.add('open'); app.classList.add('blurred'); app.inert = true;
+    modal.querySelector('[data-close]').addEventListener('click', closeModal);
+  }
+  function closeModal() { overlay.classList.remove('open'); app.classList.remove('blurred'); app.inert = false; modal.innerHTML = ''; }
+  const closeRow = '<div class="close-row"><button type="button" class="text-btn" data-close>닫기</button></div>';
+
+  function openDetail(items, idx) {
+    const f = items[idx];
+    const rows = [['위치', f.location, true], ['운영 시간', f.hours], ['비용', f.cost, true], ['시설 안내', f.info], ['이용 조건', f.conditions]]
+      .filter(([, v, req]) => req || (v != null && String(v).trim() !== ''))
+      .map(([k, v]) => `<dt>${k}</dt><dd>${esc(v ?? '')}</dd>`).join('');
+    const next = items.length > 1
+      ? `<button type="button" class="next-btn" aria-label="다음 시설" ${idx >= items.length - 1 ? 'disabled' : ''}>&gt;</button>` : '';
+    showModal(`<h2>${esc(f.name)}</h2><dl>${rows}</dl>${next}${closeRow}`);
+    const nb = modal.querySelector('.next-btn');
+    if (nb && idx < items.length - 1) nb.addEventListener('click', () => openDetail(items, idx + 1));
+  }
+
+  /* ---------- 분석 창 ---------- */
+  $('analysisBtn').addEventListener('click', () => {
+    const count = id => DATA.filter(f => catsOf(f).includes(id)).length;
+    const rows = `<div class="total" style="display:contents"><dt>전체 저비용 시설</dt><dd>${DATA.length}개</dd></div>` +
+      CATS.map(c => `<dt>${esc(c.name)}</dt><dd>${count(c.id)}개</dd>`).join('');
+    showModal(`<h2>분석</h2><dl class="stats">${rows}</dl>${closeRow}`);
+  });
+
+  /* ---------- 지도 이동 · 확대 ---------- */
+  let scale = 1, tx = 0, ty = 0, fit = 1, moved = false;
+  const MAX_ZOOM = 6; // 화면 맞춤 대비 최대 배율
+  stage.style.width = MAP_W + 'px'; stage.style.height = MAP_H + 'px';
+  function clamp() {
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const sw = MAP_W * scale, sh = MAP_H * scale;
+    tx = sw <= vw ? (vw - sw) / 2 : Math.min(0, Math.max(vw - sw, tx));
+    ty = sh <= vh ? (vh - sh) / 2 : Math.min(0, Math.max(vh - sh, ty));
+  }
+  function apply() { clamp(); stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; }
+  function fitMap() {
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const prevFit = fit;
+    fit = Math.min(vw / MAP_W, vh / MAP_H);
+    scale = scale === 1 && prevFit === 1 ? fit : Math.max(fit, scale * fit / prevFit);
+    apply();
+    // 저작권 표시: 처음 화면(맞춤 배율)에서 보이는 건물 이름과 같은 크기
+    const nameSize = (window.BUILDINGS.find(b => b.label) || {}).label?.size || 32;
+    document.querySelector('footer').style.fontSize = (nameSize * fit).toFixed(2) + 'px';
+  }
+  function zoomAt(px, py, factor) {
+    const ns = Math.min(fit * MAX_ZOOM, Math.max(fit, scale * factor));
+    tx = px - (px - tx) * ns / scale; ty = py - (py - ty) * ns / scale; scale = ns; apply();
+  }
+  viewport.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = viewport.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+
+  let drag = null;
+  viewport.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    drag = { x: e.clientX, y: e.clientY, tx, ty, id: e.pointerId };
+    moved = false;
+  });
+  window.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!moved && Math.hypot(dx, dy) > 4) { moved = true; viewport.classList.add('dragging'); }
+    if (moved) { tx = drag.tx + dx; ty = drag.ty + dy; apply(); }
+  });
+  const endDrag = () => { drag = null; viewport.classList.remove('dragging'); setTimeout(() => { moved = false; }, 0); };
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', fitMap);
+
+  renderMarkers();
+  fitMap();
+})();
+</script>
+</body>
+</html>
