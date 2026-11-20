@@ -20,6 +20,7 @@
   --label-font: 47px;          /* 시설 이름 라벨 글자 크기(지도 픽셀) */
   --label-h: 82px;             /* 시설 이름 라벨 높이(지도 픽셀) */
   --modal-w: 460px;            /* 상세 정보 창 너비 */
+  --credit-gap: 32px;          /* 지도 그림과 팀 표기 사이 여백 (지도 픽셀) */
   --name-k: 1;                 /* 건물 이름 크기 배율 (모바일은 아래 모바일 부분에서 따로 지정) */
   --hover-stroke: #7A1426;     /* 빨간 건물 호버 테두리 */
   --modal-bg: #EFEFEF;         /* 상세 창 배경(옅은 회색) */
@@ -56,7 +57,7 @@ header {
 
 /* ----- 모바일(좁은 화면) ----- */
 @media (max-width: 640px) {
-  :root { --map-margin: 10px; --name-k: 1.3; }   /* 건물 이름을 PC보다 1.3배 크게 */
+  :root { --map-margin: 10px; --name-k: 1.3; --credit-gap: 104px; }   /* 건물 이름을 PC보다 1.3배 크게 */
   header { flex-direction: column; align-items: flex-start; gap: 8px; padding-top: 12px; }
   /* 제목이 한 줄에 다 들어가는 크기 (글자 15개 + 띄어쓰기 3개 ≈ 16.5글자 폭, 여유 포함 17.5) */
   #title { font-size: min(26px, calc((100vw - 2 * var(--map-margin)) / 17.5)); white-space: nowrap; }
@@ -168,7 +169,7 @@ header {
 /* ----- 저작권 ----- */
 /* 팀 표기: 지도 그림 아래 가운데 (수정 전 아래 글자와 비슷한 여백). 크기는 건물 이름과 같음 (지도 픽셀 기준) */
 #credit {
-  position: absolute; left: 50%; top: calc(100% + 32px); transform: translateX(-50%);   /* 지도 그림 바로 아래 */
+  position: absolute; left: 50%; top: calc(100% + var(--credit-gap)); transform: translateX(-50%);   /* 지도 그림 바로 아래 */
   white-space: nowrap; pointer-events: none; user-select: none;
   color: #8A8A8A; font-size: calc(32px * var(--name-k)); line-height: 1;
 }
@@ -266,7 +267,9 @@ header {
 <script>
 (() => {
   const MAP_W = 2880, MAP_H = 2440;
-  const FULL_H = MAP_H + 84;   // 지도 아래 팀 표기 자리까지 포함한 높이 (지도 픽셀)
+  // 지도 아래 팀 표기 자리까지 포함한 높이 (지도 픽셀). 휴대폰은 여백을 더 줌 → fitMap에서 정함
+  let FULL_H = MAP_H + 84;
+  let TOP_H = 0;   // 지도 위쪽 여백 (휴대폰에서만 사용, 지도 픽셀)
   const SVGNS = 'http://www.w3.org/2000/svg';
   const CATS = window.CATEGORIES;
   const catById = Object.fromEntries(CATS.map(c => [c.id, c]));
@@ -585,9 +588,9 @@ header {
   stage.style.width = MAP_W + 'px'; stage.style.height = MAP_H + 'px';
   function clamp() {
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
-    const sw = MAP_W * scale, sh = FULL_H * scale;
+    const sw = MAP_W * scale, sh = (TOP_H + FULL_H) * scale, top = TOP_H * scale;   // 내용 = 지도 위 여백 + 지도 + 팀 표기
     tx = sw <= vw ? (vw - sw) / 2 : Math.min(0, Math.max(vw - sw, tx));
-    ty = sh <= vh ? (vh - sh) / 2 : Math.min(0, Math.max(vh - sh, ty));
+    ty = sh <= vh + 0.5 ? (vh - sh) / 2 + top : Math.min(top, Math.max(vh - sh + top, ty));
   }
   function apply() {
     clamp(); stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
@@ -615,9 +618,19 @@ header {
   function fitMap() {
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
     const prevHome = home;
+    FULL_H = MAP_H + (PHONE.matches ? 166 : 84);   // PC: 여백 32 + 글자 + 아래 20 / 휴대폰: 여백 104 + 글자 + 아래 20
+    TOP_H = 0;
     fit = Math.min(vw / MAP_W, vh / FULL_H);                       // 지도 전체가 보이는 배율 (가장 작게 줄일 수 있는 배율)
     // 처음 화면 배율: PC는 지도 전체, 휴대폰은 좌우가 조금 잘리더라도 크게 (세로로는 넘치지 않게)
     home = PHONE.matches ? Math.max(fit, Math.min(fit * PHONE_START_ZOOM, vh / FULL_H)) : fit;
+    // 휴대폰: 처음 화면에서 팀 표기가 화면 맨 아래에 오도록, 남는 세로 공간을 지도 위·아래에 반씩 나눔
+    // (지도는 지금처럼 세로 가운데, 팀 표기와의 여백만 늘어남. 확대하면 지도와 함께 움직임)
+    let gap = 104;
+    if (PHONE.matches) {
+      const free = vh / home - FULL_H;
+      if (free > 0) { TOP_H = free / 2; FULL_H += free / 2; gap += free / 2; }
+    }
+    stage.style.setProperty('--credit-gap', PHONE.matches ? gap.toFixed(1) + 'px' : '');
     if (first) { scale = home; tx = (vw - MAP_W * scale) / 2; first = false; }   // 가운데 맞춤: 왼쪽·오른쪽이 똑같이 조금씩 잘림
     else scale = Math.max(fit, scale * home / prevHome);
     apply();
