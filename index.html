@@ -73,7 +73,7 @@ header {
 
 /* ----- 지도 ----- */
 #viewport {
-  position: relative; flex: 1; min-height: 0; margin: 0 var(--map-margin);
+  position: relative; flex: 1; min-height: 0; margin: 0 var(--map-margin) var(--map-margin);
   overflow: hidden; cursor: default; touch-action: none; background: var(--page-bg);
 }
 #viewport.dragging { cursor: grabbing; }
@@ -108,6 +108,12 @@ header {
   background: #111; box-shadow: 0 8px 0 #111, 0 -4px 0 #fff;
 }
 #lion.big #lionBubble { bottom: calc(100% + 16px); }
+/* 모바일: 말풍선을 1.5배로 (꼬리 끝 위치는 그대로 두고 키움) */
+@media (max-width: 640px) {
+  /* --shift: 화면 밖으로 잘리지 않도록 옆으로 옮기는 양(지도 픽셀). 꼬리는 계속 사자상 위를 가리킴 */
+  #lionBubble { transform: translateX(calc(-50% + var(--shift, 0px))) scale(1.5); transform-origin: 50% calc(100% + 16px); }
+  #lionBubble::after { left: calc(50% - var(--shift, 0px) / 1.5); }
+}
 #lion.talk #lionBubble { display: block; }
 @media (hover: hover) { #lion:hover #lionBubble { display: block; } }
 
@@ -160,7 +166,12 @@ header {
 .mk.group .item.last { transition: opacity 0s; }
 
 /* ----- 저작권 ----- */
-footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10px; }
+/* 팀 표기: 지도 그림 아래 가운데 (수정 전 아래 글자와 비슷한 여백). 크기는 건물 이름과 같음 (지도 픽셀 기준) */
+#credit {
+  position: absolute; left: 50%; top: calc(100% + 32px); transform: translateX(-50%);   /* 지도 그림 바로 아래 */
+  white-space: nowrap; pointer-events: none; user-select: none;
+  color: #8A8A8A; font-size: calc(32px * var(--name-k)); line-height: 1;
+}
 
 /* ----- 상세 정보 / 분석 창 ----- */
 #overlay {
@@ -241,10 +252,10 @@ footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10p
         <div id="lionBubble">분석중-</div>
       </div>
       <div id="markers"></div>
+      <!-- 팀 표기: 지도 안 아래쪽 가운데. 지도와 함께 움직이고 커짐 -->
+      <div id="credit">경희대학교 세계와 시민 S34 분반 GCP 1조</div>
     </div>
   </div>
-
-  <footer>경희대학교 세계와 시민 S34 분반 GCP 1조</footer>
 </div>
 
 <div id="overlay" role="dialog" aria-modal="true">
@@ -255,6 +266,7 @@ footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10p
 <script>
 (() => {
   const MAP_W = 2880, MAP_H = 2440;
+  const FULL_H = MAP_H + 84;   // 지도 아래 팀 표기 자리까지 포함한 높이 (지도 픽셀)
   const SVGNS = 'http://www.w3.org/2000/svg';
   const CATS = window.CATEGORIES;
   const catById = Object.fromEntries(CATS.map(c => [c.id, c]));
@@ -573,7 +585,7 @@ footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10p
   stage.style.width = MAP_W + 'px'; stage.style.height = MAP_H + 'px';
   function clamp() {
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
-    const sw = MAP_W * scale, sh = MAP_H * scale;
+    const sw = MAP_W * scale, sh = FULL_H * scale;
     tx = sw <= vw ? (vw - sw) / 2 : Math.min(0, Math.max(vw - sw, tx));
     ty = sh <= vh ? (vh - sh) / 2 : Math.min(0, Math.max(vh - sh, ty));
   }
@@ -583,22 +595,32 @@ footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10p
     markersEl.style.setProperty('--mk-scale', TOUCH.matches ? Math.max(1, MIN_MARKER_PX / (MARKER_W * scale)).toFixed(3) : 1);
     if (isSplit() !== splitShown) renderMarkers();   // 나뉘는 배율을 넘나들 때만 다시 그림
     $('lion').classList.toggle('big', scale / home >= LION_ZOOM - 1e-6);
+    fitBubble();
+  }
+  // 모바일: 말풍선이 지도 화면 밖으로 잘리면 안쪽으로 옮김 (PC에서는 아무것도 하지 않음)
+  function fitBubble() {
+    const b = $('lionBubble');
+    if (!PHONE.matches) { b.style.removeProperty('--shift'); return; }
+    if (!$('lion').classList.contains('talk')) return;
+    b.style.setProperty('--shift', '0px');
+    const r = b.getBoundingClientRect(), v = viewport.getBoundingClientRect(), pad = 4;
+    let dx = 0;                                                   // 화면 px
+    if (r.right > v.right - pad) dx = (v.right - pad) - r.right;
+    else if (r.left < v.left + pad) dx = (v.left + pad) - r.left;
+    const maxShift = (b.offsetWidth / 2 - 12) * 1.5;              // 꼬리가 말풍선 밖으로 나가지 않을 만큼만
+    const shift = Math.max(-maxShift, Math.min(maxShift, dx / scale));
+    b.style.setProperty('--shift', shift.toFixed(1) + 'px');
   }
   let first = true;
   function fitMap() {
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
     const prevHome = home;
-    fit = Math.min(vw / MAP_W, vh / MAP_H);                       // 지도 전체가 보이는 배율 (가장 작게 줄일 수 있는 배율)
+    fit = Math.min(vw / MAP_W, vh / FULL_H);                       // 지도 전체가 보이는 배율 (가장 작게 줄일 수 있는 배율)
     // 처음 화면 배율: PC는 지도 전체, 휴대폰은 좌우가 조금 잘리더라도 크게 (세로로는 넘치지 않게)
-    home = PHONE.matches ? Math.max(fit, Math.min(fit * PHONE_START_ZOOM, vh / MAP_H)) : fit;
+    home = PHONE.matches ? Math.max(fit, Math.min(fit * PHONE_START_ZOOM, vh / FULL_H)) : fit;
     if (first) { scale = home; tx = (vw - MAP_W * scale) / 2; first = false; }   // 가운데 맞춤: 왼쪽·오른쪽이 똑같이 조금씩 잘림
     else scale = Math.max(fit, scale * home / prevHome);
     apply();
-    // 저작권 표시: 처음 화면(맞춤 배율)에서 보이는 건물 이름과 같은 크기
-    const nameSize = (window.BUILDINGS.find(b => b.label) || {}).label?.size || 32;
-    // 모바일에서는 지도가 아주 작게 보여도 읽을 수 있도록 최소 10px
-    const fs = nameSize * fit;
-    document.querySelector('footer').style.fontSize = (TOUCH.matches ? Math.max(10, fs) : fs).toFixed(2) + 'px';
   }
   function zoomAt(px, py, factor) {
     const ns = Math.min(fit * MAX_ZOOM, Math.max(fit, scale * factor));
@@ -673,7 +695,7 @@ footer { text-align: center; font-size: 11px; color: #8A8A8A; padding: 8px 0 10p
   setInterval(() => {
     const l = $('lion');
     $('lionBubble').textContent = lionLines[lionLine++ % lionLines.length];
-    l.classList.add('talk'); setTimeout(() => l.classList.remove('talk'), 2500);
+    l.classList.add('talk'); fitBubble(); setTimeout(() => l.classList.remove('talk'), 2500);
   }, 9000);
 })();
 </script>
